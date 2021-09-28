@@ -79,7 +79,7 @@ compileLisp
     -> Maybe String -- ^ Function exit point, if any
     -> IOThrowsError [HaskAST]
 compileLisp env filename entryPoint exitPoint = do
-    filename' <- LSC.findFileOrLib filename 
+    filename' <- LSC.findFileOrLib env filename 
     ast <- load filename' >>= compileBlock entryPoint exitPoint env []
     case ast of
         [] -> compileScalar 

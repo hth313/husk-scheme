@@ -1,5 +1,5 @@
 Name:                husk-scheme
-Version:             3.20
+Version:             3.20.0.1
 Synopsis:            R5RS Scheme interpreter, compiler, and library.
 Description:         
   <<https://github.com/justinethier/husk-scheme/raw/master/docs/husk-scheme.png>>
@@ -74,7 +74,7 @@ flag useptrs
 
 Library
   Default-Language: Haskell2010
-  Build-Depends:   base >= 2.0 && < 5, array, containers, haskeline, transformers, mtl, parsec, directory, bytestring, utf8-string, time, process, knob
+  Build-Depends:   base >= 2.0 && < 5, array, containers, haskeline, transformers, mtl, parsec, directory, filepath, bytestring, utf8-string, time, process, knob
   Default-Extensions:      ExistentialQuantification
   Hs-Source-Dirs:  hs-src
   Exposed-Modules: Language.Scheme.Core
@@ -111,7 +111,7 @@ Library
 
 Executable         huski
   Default-Language: Haskell2010
-  Build-Depends:   husk-scheme, base >= 2.0 && < 5, array, containers, haskeline, transformers, mtl, parsec, directory, process
+  Build-Depends:   husk-scheme, base >= 2.0 && < 5, array, containers, haskeline, transformers, mtl, parsec, directory, filepath, process
   if flag(useffi)
     Build-Depends: ghc, ghc-paths
     cpp-options: -DUseFfi
@@ -122,7 +122,7 @@ Executable         huski
 
 Executable huskc
   Default-Language: Haskell2010
-  Build-Depends: husk-scheme, base >= 2.0 && < 5, array, containers, haskeline, transformers, mtl, parsec, directory, ghc-paths, process, filepath
+  Build-Depends: husk-scheme, base >= 2.0 && < 5, array, containers, haskeline, transformers, mtl, parsec, directory, filepath, ghc-paths, process, filepath
   if flag(usedebug)
     cpp-options: -DUseDebug
   if flag(useffi)

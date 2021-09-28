@@ -1,4 +1,5 @@
 {-# LANGUAGE CPP #-}
+{-# LANGUAGE LambdaCase #-}
 
 {- |
 Module      : Language.Scheme.Core
@@ -26,8 +27,12 @@ module Language.Scheme.Core
     -- * Core data
     , nullEnvWithImport
     , primitiveBindings
+    , r5rsEnvWithLoadPaths
+    , r5rsEnvWithLoadPaths'
     , r5rsEnv
     , r5rsEnv'
+    , r7rsEnvWithLoadPaths
+    , r7rsEnvWithLoadPaths'
     , r7rsEnv
     , r7rsEnv'
     , r7rsTimeEnv
@@ -66,10 +71,12 @@ import Control.Monad.Except
 import Data.Array
 import qualified Data.ByteString as BS
 import qualified Data.Map
-import Data.Maybe (fromMaybe, isJust, isNothing)
+import Data.Maybe (catMaybes, fromMaybe, isJust, isNothing)
 import Data.Version as DV
 import Data.Word
+import System.Directory (doesFileExist)
 import qualified System.Exit
+import System.FilePath
 import qualified System.Info as SysInfo
 -- import Debug.Trace
 
@@ -109,6 +116,24 @@ getHuskFeatures = do
 getDataFileFullPath :: String -> IO String
 getDataFileFullPath = PHS.getDataFileName
 
+loadPathName = "%load-path"
+
+-- | Use the load path to locate a file. Falls back to providing just
+--   input path if not found
+pathToLibraryFile :: Env -> String -> IO String
+pathToLibraryFile env file =
+  let exists (String path) =
+        let filepath = path </> file
+        in doesFileExist filepath >>= \case
+             True  -> pure $ Just filepath
+             False -> pure Nothing
+      fileExists (String path) = doesFileExist path
+  in runExceptT (getVar env loadPathName) >>= \case
+         Right (List elts) -> liftM catMaybes (mapM exists elts) >>= \case
+             filepath:_ -> pure filepath
+             otherwise -> pure file
+         otherwise -> pure file
+
 -- Future use:
 -- getDataFileFullPath' :: [LispVal] -> IOThrowsError LispVal
 -- getDataFileFullPath' [String s] = do
@@ -121,25 +146,25 @@ getDataFileFullPath = PHS.getDataFileName
 --  libraries. If the file is not found in the current directory but exists
 --  as a husk library, return the full path to the file in the library.
 --  Otherwise just return the given filename.
-findFileOrLib :: String -> ExceptT LispError IO String
-findFileOrLib filename = do
-    fileAsLib <- liftIO $ getDataFileFullPath $ "lib/" ++ filename
+findFileOrLib :: Env -> String -> ExceptT LispError IO String
+findFileOrLib env filename = do
+    fileAsLib <- liftIO $ pathToLibraryFile env ("lib" </> filename)
     exists <- fileExists [String filename]
     existsLib <- fileExists [String fileAsLib]
     case (exists, existsLib) of
         (Bool False, Bool True) -> return fileAsLib
         _ -> return filename
 
-libraryExists :: [LispVal] -> IOThrowsError LispVal
-libraryExists [p@(Pointer _ _)] = do
+libraryExists :: Env -> [LispVal] -> IOThrowsError LispVal
+libraryExists env [p@(Pointer _ _)] = do
     p' <- recDerefPtrs p
-    libraryExists [p']
-libraryExists [(String filename)] = do
-    fileAsLib <- liftIO $ getDataFileFullPath $ "lib/" ++ filename
+    libraryExists env [p']
+libraryExists env [(String filename)] = do
+    fileAsLib <- liftIO $ pathToLibraryFile env ("lib" </> filename)
     Bool exists <- fileExists [String filename]
     Bool existsLib <- fileExists [String fileAsLib]
     return $ Bool $ exists || existsLib
-libraryExists _ = return $ Bool False
+libraryExists _ _ = return $ Bool False
 
 -- |Register optional SRFI extensions
 registerExtensions :: Env -> (FilePath -> IO FilePath) -> IO ()
@@ -1057,13 +1082,18 @@ apply _ func args = do
 --  For the purposes of using husk as an extension language, /r5rsEnv/ will
 --  probably be more useful.
 primitiveBindings :: IO Env
-primitiveBindings = nullEnv >>= 
-    flip extendEnv  ( map (domakeFunc IOFunc) ioPrimitives
+primitiveBindings = do
+  installLibraryPath <- PHS.getDataFileName ""
+  primitiveBindingsWithLoadPaths (List [String installLibraryPath])
+
+primitiveBindingsWithLoadPaths :: LispVal -> IO Env
+primitiveBindingsWithLoadPaths loadPaths = nullEnv >>= 
+    flip extendEnv  ( [((varNamespace, loadPathName), loadPaths)]
+                   ++ map (domakeFunc IOFunc) ioPrimitives
                    ++ map (domakeFunc EvalFunc) evalFunctions
                    ++ map (domakeFunc PrimitiveFunc) primitives)
   where domakeFunc constructor (var, func) = 
             ((varNamespace, var), constructor func)
-
 --baseBindings :: IO Env
 --baseBindings = nullEnv >>= 
 --    (flip extendEnv $ map (domakeFunc EvalFunc) evalFunctions)
@@ -1077,6 +1107,18 @@ nullEnvWithImport = nullEnv >>=
   (flip extendEnv [
     ((varNamespace, "%import"), EvalFunc evalfuncImport),
     ((varNamespace, "hash-table-ref"), EvalFunc hashTblRef)])
+
+r5rsEnvWithLoadPaths :: LispVal -> IO Env
+r5rsEnvWithLoadPaths loadPaths = do
+  env <- r5rsEnvWithLoadPaths' loadPaths
+  -- Bit of a hack to load (import)
+  _ <- evalLisp' env $ List [Atom "%bootstrap-import"]
+  return env
+
+r5rsEnvWithLoadPaths' :: LispVal -> IO Env
+r5rsEnvWithLoadPaths' loadPaths = do
+  env <- primitiveBindingsWithLoadPaths loadPaths
+  r5rsEnvLoad env
 
 -- |Load the standard r5rs environment, including libraries
 r5rsEnv :: IO Env
@@ -1092,8 +1134,12 @@ r5rsEnv = do
 r5rsEnv' :: IO Env
 r5rsEnv' = do
   env <- primitiveBindings
-  stdlib <- PHS.getDataFileName "lib/stdlib.scm"
-  srfi55 <- PHS.getDataFileName "lib/srfi/srfi-55.scm" -- (require-extension)
+  r5rsEnvLoad env
+
+r5rsEnvLoad :: Env -> IO Env
+r5rsEnvLoad env = do
+  stdlib <- pathToLibraryFile env "lib/stdlib.scm"
+  srfi55 <- pathToLibraryFile env "lib/srfi/srfi-55.scm" -- (require-extension)
   
   -- Load standard library
   features <- getHuskFeatures
@@ -1102,11 +1148,11 @@ r5rsEnv' = do
 
   -- Load (require-extension), which can be used to load other SRFI's
   _ <- evalString env $ "(load \"" ++ (escapeBackslashes srfi55) ++ "\")"
-  registerExtensions env PHS.getDataFileName
+  registerExtensions env (pathToLibraryFile env)
 
 #ifdef UseLibraries
   -- Load module meta-language 
-  metalib <- PHS.getDataFileName "lib/modules.scm"
+  metalib <- pathToLibraryFile env "lib/modules.scm"
   metaEnv <- nullEnvWithParent env -- Load env as parent of metaenv
   _ <- evalString metaEnv $ "(load \"" ++ (escapeBackslashes metalib) ++ "\")"
   -- Load meta-env so we can find it later
@@ -1122,10 +1168,22 @@ r5rsEnv' = do
     Atom "define", 
     Atom "library-exists?",
     List [Atom "quote", 
-          IOFunc libraryExists]]
+          IOFunc (libraryExists env)]]
 #endif
 
   return env
+
+r7rsEnvWithLoadPaths :: LispVal -> IO Env
+r7rsEnvWithLoadPaths loadPaths = do
+  env <- r7rsEnvWithLoadPaths' loadPaths
+  -- Bit of a hack to load (import)
+  _ <- evalLisp' env $ List [Atom "%bootstrap-import"]
+  return env
+
+r7rsEnvWithLoadPaths' :: LispVal -> IO Env
+r7rsEnvWithLoadPaths' loadPaths = do
+  env <- primitiveBindingsWithLoadPaths loadPaths
+  r7rsEnvLoad env
 
 -- |Load the standard r7rs environment, including libraries
 --
@@ -1146,15 +1204,19 @@ r7rsEnv' = do
   -- basically want to limit the base bindings to the absolute minimum, but
   -- need enough to get the meta language working
   env <- primitiveBindings --baseBindings
+  r7rsEnvLoad env
+
+r7rsEnvLoad :: Env -> IO Env
+r7rsEnvLoad env = do
 --  baseEnv <- primitiveBindings
 
   -- Load necessary libraries
   -- Unfortunately this adds them in the top-level environment (!!)
   features <- getHuskFeatures
   _ <- evalString env $ "(define *features* '" ++ show (List features) ++ ")"
-  cxr <- PHS.getDataFileName "lib/cxr.scm"
+  cxr <- pathToLibraryFile env "lib/cxr.scm"
   _ <- evalString env {-baseEnv-} $ "(load \"" ++ (escapeBackslashes cxr) ++ "\")" 
-  core <- PHS.getDataFileName "lib/core.scm"
+  core <- pathToLibraryFile env "lib/core.scm"
   _ <- evalString env {-baseEnv-} $ "(load \"" ++ (escapeBackslashes core) ++ "\")" 
 
 -- TODO: probably will have to load some scheme libraries for modules.scm to work
@@ -1162,7 +1224,7 @@ r7rsEnv' = do
 
 #ifdef UseLibraries
   -- Load module meta-language 
-  metalib <- PHS.getDataFileName "lib/modules.scm"
+  metalib <- pathToLibraryFile env "lib/modules.scm"
   metaEnv <- nullEnvWithParent env -- Load env as parent of metaenv
   _ <- evalString metaEnv $ "(load \"" ++ (escapeBackslashes metalib) ++ "\")"
   -- Load meta-env so we can find it later
@@ -1177,7 +1239,7 @@ r7rsEnv' = do
     Atom "define", 
     Atom "library-exists?",
     List [Atom "quote", 
-          IOFunc libraryExists]]
+          IOFunc (libraryExists env)]]
 #endif
 
   return env
@@ -1365,7 +1427,7 @@ evalfuncLoad [(Continuation _ a b c d), String filename, LispEnv env] = do
     evalfuncLoad [Continuation env a b c d, String filename]
 
 evalfuncLoad [cont@(Continuation {contClosure = env}), String filename] = do
-    filename' <- findFileOrLib filename
+    filename' <- findFileOrLib env filename
     results <- load filename' >>= mapM (meval env (makeNullContinuation env))
     if not (null results)
        then do result <- return . last $ results

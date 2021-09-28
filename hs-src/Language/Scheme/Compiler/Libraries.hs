@@ -313,7 +313,7 @@ cmpModExpr env metaEnv name (List ((List (Atom "include" : files)) : ls))
  where 
   compileInc (String dir) (String filename) entry exit = do
     let path = dir ++ filename
-    path' <- LSC.findFileOrLib path
+    path' <- LSC.findFileOrLib env path
     compileLisp env path' entry exit
   compileInc _ _ _ _ = throwError $ InternalError ""
 
