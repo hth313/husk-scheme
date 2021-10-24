@@ -127,7 +127,6 @@ pathToLibraryFile env file =
         in doesFileExist filepath >>= \case
              True  -> pure $ Just filepath
              False -> pure Nothing
-      fileExists (String path) = doesFileExist path
   in runExceptT (getVar env loadPathName) >>= \case
          Right (List elts) -> liftM catMaybes (mapM exists elts) >>= \case
              filepath:_ -> pure filepath
@@ -149,10 +148,13 @@ pathToLibraryFile env file =
 findFileOrLib :: Env -> String -> ExceptT LispError IO String
 findFileOrLib env filename = do
     fileAsLib <- liftIO $ pathToLibraryFile env ("lib" </> filename)
+    fileAsFile <- liftIO $ pathToLibraryFile env filename
     exists <- fileExists [String filename]
     existsLib <- fileExists [String fileAsLib]
-    case (exists, existsLib) of
-        (Bool False, Bool True) -> return fileAsLib
+    existsInPath <- fileExists [String fileAsFile]
+    case (exists, existsLib, existsInPath) of
+        (Bool False, Bool True, _) -> return fileAsLib
+        (Bool False, _, Bool True) -> return fileAsFile
         _ -> return filename
 
 libraryExists :: Env -> [LispVal] -> IOThrowsError LispVal
